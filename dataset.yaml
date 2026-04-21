@@ -1,0 +1,14 @@
+path: screenshots
+train: images/train
+val: images/val
+
+names:
+  0: raider
+  1: pop 
+  2: shredder
+  3: wasp
+  4: hornet
+  5: spider
+  6: comet
+  7: fireball
+  8: firefly
