@@ -191,7 +191,7 @@ MONITOR_INDEX = 1
 CAPTURE_REGION = None
 
 CONFIDENCE = 0.20
-IMG_SIZE = 480
+IMG_SIZE = 416
 USE_GPU = True
 
 WINDOW_NAME = "LightBurn"
@@ -644,6 +644,7 @@ def main():
             crop_height=CROP_HEIGHT,
         )
 
+
         print("Capture region:", region)
 
         cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
@@ -696,12 +697,17 @@ def main():
         motion_changed_in_radius = 0
         did_run_inference = True
 
+        prev_motion_gray = None
+        frames_since_infer = 999
+
         while True:
             # ------------------------------------------------
             # Capture frame
             # ------------------------------------------------
             shot = np.array(sct.grab(region))
             frame = cv2.cvtColor(shot, cv2.COLOR_BGRA2BGR)
+            small = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25, interpolation=cv2.INTER_AREA)
+            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
 
             # ------------------------------------------------
             # Model inference (optionally gated by screen-change detection)
@@ -725,9 +731,13 @@ def main():
                     imgsz=IMG_SIZE,
                     device=0 if USE_GPU else "cpu",
                     verbose=False,
+                    half=USE_GPU,                  # FP16 on supported GPUs
+                    rect=True,                     # minimal padding
+                    max_det=40,
                 )
                 frames_since_infer = 0
             else:
+                results = None
                 frames_since_infer += 1
 
                         # ------------------------------------------------
