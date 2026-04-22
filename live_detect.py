@@ -43,8 +43,8 @@ PREVIEW_EVERY_N_FRAMES = 1   # set to 2 or 3 for less preview cost
 
 
 # tune these
-MAX_SPEED_PX_PER_SEC = 300.0      # absolute mouse speed cap
-MAX_ACCEL_PX_PER_SEC2 = 500.0    # how quickly speed can change
+MAX_SPEED_PX_PER_SEC = 500.0      # absolute mouse speed cap
+MAX_ACCEL_PX_PER_SEC2 = 1000.0    # how quickly speed can change
 DEADZONE_PX = 3.0                 # ignore tiny jitter
 
 # examples:
@@ -212,8 +212,8 @@ USE_GPU = True
 
 WINDOW_NAME = "LightBurn"
 
-CROP_WIDTH = 1200
-CROP_HEIGHT = 500
+CROP_WIDTH = 1000
+CROP_HEIGHT = 400
 
 
 # ============================================================
@@ -224,7 +224,7 @@ TRACK_MATCH_DISTANCE_PX = 120
 TRACK_FORGET_FRAMES = 1
 CONFIDENCE_SMOOTHING = 0.10   # lower = smoother, higher = reacts faster
 
-LOCK_ON_MIN_AVG_CONFIDENCE = 0.6
+LOCK_ON_MIN_AVG_CONFIDENCE = 0.3
 
 # ============================================================
 # 12) DYNAMIC VELOCITY LIMITER
