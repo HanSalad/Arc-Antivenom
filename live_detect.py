@@ -19,6 +19,7 @@ What this program does:
 - Only unmarked blue targets are allowed to become the active lock
 """
 
+import os
 import time
 import math
 import cv2
@@ -32,19 +33,8 @@ import win32con
 
 USER32 = ctypes.windll.user32
 
-last_move_time = time.perf_counter()
-last_vx = 0.0
-last_vy = 0.0
-
-
 RENDER_MODE = "full"   # "full", "boxes", "stats", "off"
 PREVIEW_EVERY_N_FRAMES = 1   # set to 2 or 3 for less preview cost
-
-
-# tune these
-MAX_SPEED_PX_PER_SEC = 700.0      # absolute mouse speed cap
-MAX_ACCEL_PX_PER_SEC2 = 1000.0    # how quickly speed can change
-DEADZONE_PX = 3.0                 # ignore tiny jitter
 
 # examples:
 # 0x10 = Shift
@@ -55,7 +45,6 @@ DEADZONE_PX = 3.0                 # ignore tiny jitter
 # 0x05 = Mouse button 4
 # 0x0D = Enter Key
 
-AIM_HOLD_KEY = 0x02   # legacy / same as raider lock key by default
 RAIDER_LOCK_KEY = 0x02   # right mouse button
 OTHER_LOCK_KEY = 0x05    # mouse button 4 / side button
 
@@ -74,6 +63,23 @@ APPLIED_VECTOR_SCALE = 6.0   # makes short moves easier to see
 APPLIED_VECTOR_COLOR = (0, 0, 255)   # red in OpenCV BGR
 APPLIED_VECTOR_THICKNESS = 2
 APPLIED_VECTOR_MIN_DRAW = 1
+
+FILTERS_ENABLED = True
+SHOW_FILTERED_PREVIEW = True
+DEFAULT_FILTER_GAMMA = 1.00
+DEFAULT_FILTER_BRIGHTNESS = 0
+DEFAULT_FILTER_CONTRAST = 1.00
+DEFAULT_FILTER_CLAHE = False
+
+# F1/F2 gamma, F3/F4 brightness, F11 contrast toggle CLAHE, F12 reset
+FILTER_HOTKEYS = {
+    0x70: ("gamma", -0.10),       # F1
+    0x71: ("gamma", 0.10),        # F2
+    0x72: ("brightness", -8),     # F3
+    0x73: ("brightness", 8),      # F4
+    0x7A: ("clahe_toggle", None), # F11
+    0x7B: ("reset", None),        # F12
+}
 
 # ============================================================
 # 1) CLASS / BEHAVIOR CONFIG
@@ -113,14 +119,14 @@ CLASS_MIN_RAW_CONFIDENCE = {
 # Per-class confidence contribution to score.
 CLASS_CONFIDENCE_WEIGHT = {
     "raider": 1.00,
-    "pop": 1.00,
-    "shredder": 1.00,
-    "wasp": 1.00,
-    "hornet": 1.00,
-    "spider": 1.00,
-    "comet": 1.00,
-    "fireball": 1.00,
-    "firefly": 1.00,
+    "pop": 0.60,
+    "shredder": 0.75,
+    "wasp": 0.80,
+    "hornet": 0.80,
+    "spider": 0.70,
+    "comet": 0.90,
+    "fireball": 0.75,
+    "firefly": 0.70,
 }
 
 # Per-class minimum average confidence for lock-style decisions.
@@ -128,10 +134,10 @@ CLASS_LOCK_MIN_AVG_CONFIDENCE = {
     "raider": 0.60,
     "pop": 0.30,
     "shredder": 0.30,
-    "wasp": 0.30,
-    "hornet": 0.30,
+    "wasp": 0.40,
+    "hornet": 0.40,
     "spider": 0.40,
-    "comet": 0.30,
+    "comet": 0.40,
     "fireball": 0.35,
     "firefly": 0.35,
 }
@@ -169,12 +175,12 @@ TRACKABLE_CLASSES = set(CLASS_NAMES.values())
 
 # Screen-change / motion gating for inference.
 MOTION_SCAN_ENABLED = False
-MOTION_DIFF_THRESHOLD = 18
-MIN_CHANGED_PIXELS = 350
-MIN_CHANGED_BLOB_AREA = 120
-MOTION_RADIUS = 18
-MIN_CHANGED_IN_RADIUS = 80
-FORCE_INFERENCE_EVERY_N_FRAMES = 1
+MOTION_DIFF_THRESHOLD = 20
+MIN_CHANGED_PIXELS = 40
+MIN_CHANGED_BLOB_AREA = 20
+MOTION_RADIUS = 10
+MIN_CHANGED_IN_RADIUS = 12
+FORCE_INFERENCE_EVERY_N_FRAMES = 3
 
 
 CROSSHAIR_OFFSET_X = 0     # + moves right, - moves left
@@ -187,17 +193,32 @@ CROSSHAIR_OFFSET_Y = -7     # + moves down, - moves up
 
 MODEL_PATH = r"runs/detect/runs/game_targets/weights/best.pt"
 
+PYTORCH_MODEL_PATH = MODEL_PATH
+TENSORRT_MODEL_PATH = MODEL_PATH.replace(".pt", ".engine")
+PREFER_TENSORRT = True
+EXPORT_TENSORRT_IF_MISSING = False
+TENSORRT_HALF = True
+TENSORRT_INT8 = False
+
+TWO_STAGE_ENABLED = True
+STAGE1_IMG_SIZE = 320
+STAGE2_IMG_SIZE = 640
+STAGE2_PADDING = 160
+STAGE2_MIN_CONF = 0.10
+STAGE2_REQUIRE_HOTKEY = True
+STAGE2_CLASSES_MATCH_ONLY = True
+
 MONITOR_INDEX = 1
 CAPTURE_REGION = None
 
 CONFIDENCE = 0.20
-IMG_SIZE = 416
+IMG_SIZE = 480
 USE_GPU = True
 
 WINDOW_NAME = "LightBurn"
 
-CROP_WIDTH = 1200
-CROP_HEIGHT = 500
+CROP_WIDTH = 1000
+CROP_HEIGHT = 400
 
 
 # ============================================================
@@ -208,7 +229,7 @@ TRACK_MATCH_DISTANCE_PX = 120
 TRACK_FORGET_FRAMES = 1
 CONFIDENCE_SMOOTHING = 0.10   # lower = smoother, higher = reacts faster
 
-LOCK_ON_MIN_AVG_CONFIDENCE = 0.3
+LOCK_ON_MIN_AVG_CONFIDENCE = 0.6
 
 # ============================================================
 # 12) DYNAMIC VELOCITY LIMITER
@@ -254,7 +275,6 @@ DROP_MEMORY_SCORE_BONUS = 0.35
 # ============================================================
 
 CHECK_MARKER_ABOVE_TARGET = False
-MARKER_BOX_HEIGHT = 80
 MARKER_BOX_WIDTH_RATIO = 0.50
 MIN_MARKER_PIXELS = 15
 
@@ -305,10 +325,6 @@ def clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 
-def box_center(x1, y1, x2, y2):
-    return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
-
-
 def get_aim_region_box(x1, y1, x2, y2, region_name="center"):
     region = AIM_REGION_DEFS.get(region_name, AIM_REGION_DEFS["center"])
 
@@ -341,6 +357,38 @@ def get_aim_point(x1, y1, x2, y2, region_name="center"):
     return cx, cy, ax1, ay1, ax2, ay2
 
 
+def build_detection_entry(frame_bgr, class_name, x1, y1, x2, y2, raw_conf, aim_region_override=None):
+    min_conf_for_class = CLASS_MIN_RAW_CONFIDENCE.get(class_name, CONFIDENCE)
+    if raw_conf < min_conf_for_class:
+        return None
+
+    aim_region_name = aim_region_override or CLASS_AIM_REGION.get(class_name, "center")
+    cx, cy, aim_x1, aim_y1, aim_x2, aim_y2 = get_aim_point(x1, y1, x2, y2, aim_region_name)
+
+    has_marker = False
+    marker_rect = None
+    if CHECK_MARKER_ABOVE_TARGET:
+        has_marker, marker_rect = marker_present_above_target(frame_bgr, x1, y1, x2, y2)
+
+    return {
+        "class_name": class_name,
+        "x1": int(x1),
+        "y1": int(y1),
+        "x2": int(x2),
+        "y2": int(y2),
+        "cx": int(cx),
+        "cy": int(cy),
+        "raw_conf": float(raw_conf),
+        "has_marker": has_marker,
+        "marker_rect": marker_rect,
+        "aim_region_name": aim_region_name,
+        "aim_x1": int(aim_x1),
+        "aim_y1": int(aim_y1),
+        "aim_x2": int(aim_x2),
+        "aim_y2": int(aim_y2),
+    }
+
+
 def remove_away_component(error_x, error_y, vx, vy):
     """
     Remove only the component of velocity that points away from the target.
@@ -361,56 +409,6 @@ def remove_away_component(error_x, error_y, vx, vy):
         vy -= away_vy
 
     return vx, vy
-
-def limit_mouse_delta(raw_dx, raw_dy):
-    global last_move_time, last_vx, last_vy
-
-    now = time.perf_counter()
-    dt = now - last_move_time
-    last_move_time = now
-
-    if dt <= 0:
-        dt = 1 / 240.0
-
-    # ignore tiny jitter
-    mag = math.hypot(raw_dx, raw_dy)
-    if mag < DEADZONE_PX:
-        last_vx = 0.0
-        last_vy = 0.0
-        return 0, 0
-
-    # desired velocity from this frame's requested move
-    desired_vx = raw_dx / dt
-    desired_vy = raw_dy / dt
-
-    # 1) clamp acceleration
-    dvx = desired_vx - last_vx
-    dvy = desired_vy - last_vy
-    dv_mag = math.hypot(dvx, dvy)
-    max_dv = MAX_ACCEL_PX_PER_SEC2 * dt
-
-    if dv_mag > max_dv and dv_mag > 0:
-        scale = max_dv / dv_mag
-        desired_vx = last_vx + dvx * scale
-        desired_vy = last_vy + dvy * scale
-
-    # 2) clamp absolute speed
-    v_mag = math.hypot(desired_vx, desired_vy)
-    if v_mag > MAX_SPEED_PX_PER_SEC and v_mag > 0:
-        scale = MAX_SPEED_PX_PER_SEC / v_mag
-        desired_vx *= scale
-        desired_vy *= scale
-
-    # save limited velocity
-    last_vx = desired_vx
-    last_vy = desired_vy
-
-    # convert back to per-frame movement
-    limited_dx = desired_vx * dt
-    limited_dy = desired_vy * dt
-
-    return int(round(limited_dx)), int(round(limited_dy))
-
 
 def normalized_center_distance(cx, cy, frame_w, frame_h):
     screen_cx = frame_w / 2.0
@@ -468,8 +466,31 @@ def get_mouse_position():
     return pt.x, pt.y
 
 
+def maybe_export_tensorrt_engine():
+    if not PREFER_TENSORRT or not EXPORT_TENSORRT_IF_MISSING:
+        return
+    if os.path.exists(TENSORRT_MODEL_PATH) or not os.path.exists(PYTORCH_MODEL_PATH):
+        return
+
+    export_model = YOLO(PYTORCH_MODEL_PATH)
+    export_model.export(
+        format="engine",
+        imgsz=STAGE2_IMG_SIZE,
+        device=0 if USE_GPU else "cpu",
+        half=TENSORRT_HALF,
+        int8=TENSORRT_INT8,
+    )
+
+
+def resolve_runtime_model_path():
+    if PREFER_TENSORRT and os.path.exists(TENSORRT_MODEL_PATH):
+        return TENSORRT_MODEL_PATH
+    return PYTORCH_MODEL_PATH
+
+
 def compute_motion_metrics(prev_gray, frame_bgr):
-    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    small = cv2.resize(frame_bgr, (0, 0), fx=0.25, fy=0.25, interpolation=cv2.INTER_AREA)
+    gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
 
     if prev_gray is None or prev_gray.shape != gray.shape:
         return gray, 0, 0, 0, True
@@ -477,16 +498,8 @@ def compute_motion_metrics(prev_gray, frame_bgr):
     diff = cv2.absdiff(gray, prev_gray)
     _, motion_mask = cv2.threshold(diff, MOTION_DIFF_THRESHOLD, 255, cv2.THRESH_BINARY)
 
-    kernel = np.ones((3, 3), np.uint8)
-    motion_mask = cv2.morphologyEx(motion_mask, cv2.MORPH_OPEN, kernel)
-    motion_mask = cv2.dilate(motion_mask, kernel, iterations=1)
-
     changed_pixels = int(cv2.countNonZero(motion_mask))
-
-    num_labels, _, stats, _ = cv2.connectedComponentsWithStats(motion_mask, connectivity=8)
-    largest_blob_area = 0
-    for i in range(1, num_labels):
-        largest_blob_area = max(largest_blob_area, int(stats[i, cv2.CC_STAT_AREA]))
+    largest_blob_area = changed_pixels
 
     radius_kernel_size = max(1, (MOTION_RADIUS * 2) + 1)
     radius_kernel = np.ones((radius_kernel_size, radius_kernel_size), dtype=np.uint8)
@@ -500,6 +513,27 @@ def compute_motion_metrics(prev_gray, frame_bgr):
     )
 
     return gray, changed_pixels, largest_blob_area, max_changed_in_radius, should_infer
+
+
+def apply_video_filters(frame_bgr, gamma=1.0, brightness=0, contrast=1.0, clahe_enabled=False):
+    out = frame_bgr
+
+    if contrast != 1.0 or brightness != 0:
+        out = cv2.convertScaleAbs(out, alpha=contrast, beta=brightness)
+
+    if abs(gamma - 1.0) > 1e-6:
+        gamma = max(0.10, float(gamma))
+        lut = np.array([((i / 255.0) ** (1.0 / gamma)) * 255 for i in range(256)], dtype=np.uint8)
+        out = cv2.LUT(out, lut)
+
+    if clahe_enabled:
+        lab = cv2.cvtColor(out, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        l = clahe.apply(l)
+        out = cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2BGR)
+
+    return out
 
 
 def lerp(a, b, t):
@@ -632,9 +666,16 @@ def draw_crosshair(frame):
 # ============================================================
 
 def main():
-    model = YOLO(MODEL_PATH)
-    print("Loaded model:", MODEL_PATH)
+    maybe_export_tensorrt_engine()
+    runtime_model_path = resolve_runtime_model_path()
+    model = YOLO(runtime_model_path)
+    print("Loaded model:", runtime_model_path)
     print("Model classes:", model.names)
+
+    name_to_id = {name: idx for idx, name in model.names.items()} if isinstance(model.names, dict) else {name: idx for idx, name in enumerate(model.names)}
+    trackable_class_ids = [name_to_id[name] for name in TRACKABLE_CLASSES if name in name_to_id]
+    raider_class_ids = [name_to_id[TRACK_CLASS]] if TRACK_CLASS in name_to_id else []
+    other_class_ids = [cid for name, cid in name_to_id.items() if name in TRACKABLE_CLASSES and name != TRACK_CLASS]
 
     with mss() as sct:
         monitor = sct.monitors[MONITOR_INDEX]
@@ -643,7 +684,6 @@ def main():
             crop_width=CROP_WIDTH,
             crop_height=CROP_HEIGHT,
         )
-
 
         print("Capture region:", region)
 
@@ -688,6 +728,12 @@ def main():
         prev_raider_key_down = False
         prev_other_key_down = False
         prev_aim_hotkey_down = {vk: False for vk in AIM_REGION_HOTKEYS}
+        prev_filter_hotkey_down = {vk: False for vk in FILTER_HOTKEYS}
+
+        filter_gamma = DEFAULT_FILTER_GAMMA
+        filter_brightness = DEFAULT_FILTER_BRIGHTNESS
+        filter_contrast = DEFAULT_FILTER_CONTRAST
+        filter_clahe_enabled = DEFAULT_FILTER_CLAHE
 
         prev_motion_gray = None
         frames_since_infer = FORCE_INFERENCE_EVERY_N_FRAMES
@@ -697,17 +743,20 @@ def main():
         motion_changed_in_radius = 0
         did_run_inference = True
 
-        prev_motion_gray = None
-        frames_since_infer = 999
-
         while True:
             # ------------------------------------------------
             # Capture frame
             # ------------------------------------------------
             shot = np.array(sct.grab(region))
             frame = cv2.cvtColor(shot, cv2.COLOR_BGRA2BGR)
-            small = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25, interpolation=cv2.INTER_AREA)
-            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
+
+            frame_for_inference = apply_video_filters(
+                frame,
+                gamma=filter_gamma,
+                brightness=filter_brightness,
+                contrast=filter_contrast,
+                clahe_enabled=filter_clahe_enabled,
+            ) if FILTERS_ENABLED else frame
 
             # ------------------------------------------------
             # Model inference (optionally gated by screen-change detection)
@@ -723,21 +772,23 @@ def main():
                 or frames_since_infer >= FORCE_INFERENCE_EVERY_N_FRAMES
             )
 
+            stage1_classes = trackable_class_ids if trackable_class_ids else None
+
             results = None
             if did_run_inference:
                 results = model.predict(
-                    source=frame,
+                    source=frame_for_inference,
                     conf=CONFIDENCE,
-                    imgsz=IMG_SIZE,
+                    imgsz=STAGE1_IMG_SIZE if TWO_STAGE_ENABLED else IMG_SIZE,
                     device=0 if USE_GPU else "cpu",
                     verbose=False,
-                    half=USE_GPU,                  # FP16 on supported GPUs
-                    rect=True,                     # minimal padding
+                    half=USE_GPU,
+                    rect=True,
                     max_det=40,
+                    classes=stage1_classes,
                 )
                 frames_since_infer = 0
             else:
-                results = None
                 frames_since_infer += 1
 
                         # ------------------------------------------------
@@ -763,7 +814,7 @@ def main():
             frame_h, frame_w = frame.shape[:2]
 
             if render_mode == "full":
-                annotated = frame.copy()
+                annotated = frame_for_inference.copy() if SHOW_FILTERED_PREVIEW else frame.copy()
             elif render_mode in ("boxes", "stats"):
                 annotated = np.zeros_like(frame)
             else:
@@ -810,6 +861,23 @@ def main():
                     current_aim_region_override = region_name
                 prev_aim_hotkey_down[vk] = hotkey_down
 
+            for vk, action in FILTER_HOTKEYS.items():
+                hotkey_down = is_key_down(vk)
+                if hotkey_down and not prev_filter_hotkey_down[vk]:
+                    kind, value = action
+                    if kind == "gamma":
+                        filter_gamma = min(3.0, max(0.2, filter_gamma + value))
+                    elif kind == "brightness":
+                        filter_brightness = int(min(80, max(-80, filter_brightness + value)))
+                    elif kind == "clahe_toggle":
+                        filter_clahe_enabled = not filter_clahe_enabled
+                    elif kind == "reset":
+                        filter_gamma = DEFAULT_FILTER_GAMMA
+                        filter_brightness = DEFAULT_FILTER_BRIGHTNESS
+                        filter_contrast = DEFAULT_FILTER_CONTRAST
+                        filter_clahe_enabled = DEFAULT_FILTER_CLAHE
+                prev_filter_hotkey_down[vk] = hotkey_down
+
             # ------------------------------------------------
             # Build raw detections for classes we care about
             # ------------------------------------------------
@@ -834,38 +902,105 @@ def main():
                         x1, y1, x2, y2 = xyxy[i].astype(int)
                         raw_conf = float(confs[i])
 
-                        min_conf_for_class = CLASS_MIN_RAW_CONFIDENCE.get(class_name, CONFIDENCE)
-                        if raw_conf < min_conf_for_class:
-                            continue
+                        entry = build_detection_entry(
+                            frame,
+                            class_name,
+                            x1,
+                            y1,
+                            x2,
+                            y2,
+                            raw_conf,
+                            current_aim_region_override,
+                        )
+                        if entry is not None:
+                            current_detections.append(entry)
 
-                        aim_region_name = current_aim_region_override or CLASS_AIM_REGION.get(class_name, "center")
-                        cx, cy, aim_x1, aim_y1, aim_x2, aim_y2 = get_aim_point(
-                            x1, y1, x2, y2, aim_region_name
+            if did_run_inference and TWO_STAGE_ENABLED and (not STAGE2_REQUIRE_HOTKEY or active_lock_mode in ("raider", "other")):
+                if active_lock_mode == "raider":
+                    eligible_stage2_classes = {TRACK_CLASS}
+                    stage2_class_ids = raider_class_ids if raider_class_ids else None
+                elif active_lock_mode == "other":
+                    eligible_stage2_classes = TRACKABLE_CLASSES - {TRACK_CLASS}
+                    stage2_class_ids = other_class_ids if other_class_ids else None
+                else:
+                    eligible_stage2_classes = TRACKABLE_CLASSES
+                    stage2_class_ids = trackable_class_ids if trackable_class_ids else None
+
+                eligible_stage1 = [
+                    (idx, det) for idx, det in enumerate(current_detections)
+                    if det["class_name"] in eligible_stage2_classes
+                ]
+
+                if eligible_stage1:
+                    stage1_idx, stage1_candidate = min(
+                        eligible_stage1,
+                        key=lambda item: math.hypot(item[1]["cx"] - screen_cx, item[1]["cy"] - screen_cy)
+                    )
+
+                    rx1 = max(0, stage1_candidate["x1"] - STAGE2_PADDING)
+                    ry1 = max(0, stage1_candidate["y1"] - STAGE2_PADDING)
+                    rx2 = min(frame_w, stage1_candidate["x2"] + STAGE2_PADDING)
+                    ry2 = min(frame_h, stage1_candidate["y2"] + STAGE2_PADDING)
+
+                    if rx2 > rx1 and ry2 > ry1:
+                        roi = frame_for_inference[ry1:ry2, rx1:rx2]
+
+                        if STAGE2_CLASSES_MATCH_ONLY and stage1_candidate["class_name"] in name_to_id:
+                            stage2_predict_classes = [name_to_id[stage1_candidate["class_name"]]]
+                        else:
+                            stage2_predict_classes = stage2_class_ids
+
+                        stage2_results = model.predict(
+                            source=roi,
+                            conf=min(CONFIDENCE, STAGE2_MIN_CONF),
+                            imgsz=STAGE2_IMG_SIZE,
+                            device=0 if USE_GPU else "cpu",
+                            verbose=False,
+                            half=USE_GPU,
+                            rect=True,
+                            max_det=10,
+                            classes=stage2_predict_classes,
                         )
 
-                        has_marker = False
-                        marker_rect = None
-                        if CHECK_MARKER_ABOVE_TARGET:
-                            has_marker, marker_rect = marker_present_above_target(frame, x1, y1, x2, y2)
+                        refined_detections = []
+                        if stage2_results:
+                            stage2_result = stage2_results[0]
+                            stage2_boxes = stage2_result.boxes
 
-                        entry = {
-                            "class_name": class_name,
-                            "x1": x1,
-                            "y1": y1,
-                            "x2": x2,
-                            "y2": y2,
-                            "cx": cx,
-                            "cy": cy,
-                            "raw_conf": raw_conf,
-                            "has_marker": has_marker,
-                            "marker_rect": marker_rect,
-                            "aim_region_name": aim_region_name,
-                            "aim_x1": aim_x1,
-                            "aim_y1": aim_y1,
-                            "aim_x2": aim_x2,
-                            "aim_y2": aim_y2,
-                        }
-                        current_detections.append(entry)
+                            if stage2_boxes is not None and len(stage2_boxes) > 0:
+                                s_xyxy = stage2_boxes.xyxy.cpu().numpy()
+                                s_cls = stage2_boxes.cls.cpu().numpy()
+                                s_confs = stage2_boxes.conf.cpu().numpy()
+
+                                for j in range(len(s_xyxy)):
+                                    s_cls_id = int(s_cls[j])
+                                    s_class_name = model.names[s_cls_id]
+
+                                    gx1, gy1, gx2, gy2 = s_xyxy[j].astype(int)
+                                    gx1 += rx1
+                                    gx2 += rx1
+                                    gy1 += ry1
+                                    gy2 += ry1
+
+                                    refined_entry = build_detection_entry(
+                                        frame,
+                                        s_class_name,
+                                        gx1,
+                                        gy1,
+                                        gx2,
+                                        gy2,
+                                        float(s_confs[j]),
+                                        current_aim_region_override,
+                                    )
+                                    if refined_entry is not None:
+                                        refined_detections.append(refined_entry)
+
+                        if refined_detections:
+                            refined_best = min(
+                                refined_detections,
+                                key=lambda det: math.hypot(det["cx"] - stage1_candidate["cx"], det["cy"] - stage1_candidate["cy"])
+                            )
+                            current_detections[stage1_idx] = refined_best
 
             if did_run_inference:
                 cached_detections = [dict(det) for det in current_detections]
@@ -1088,7 +1223,7 @@ def main():
             send_dx = 0
             send_dy = 0
 
-            if active_lock is not None and is_key_down(AIM_HOLD_KEY):
+            if active_lock is not None and is_key_down(RAIDER_LOCK_KEY):
                 mouse_frac_x += limited_vx * dt_control
                 mouse_frac_y += limited_vy * dt_control
 
@@ -1265,7 +1400,9 @@ def main():
                     f"Lock mode: {active_lock_mode or 'none'}  raider_key={raider_key_down} other_key={other_key_down}",
                     f"Aim region override: {current_aim_region_override or 'per-class default'}  F5-F10",
                     f"Motion scan: enabled={MOTION_SCAN_ENABLED} infer={did_run_inference} changed={motion_changed_pixels} blob={motion_largest_blob_area} radius={motion_changed_in_radius}",
-                    f"Class conf filter active: global={CONFIDENCE:.2f} per-class min/weight/aim preset enabled",
+                    f"Backend: {'TensorRT' if str(runtime_model_path).endswith('.engine') else 'PyTorch'}  two_stage={TWO_STAGE_ENABLED}",
+                    f"Stage1 imgsz={STAGE1_IMG_SIZE}  Stage2 imgsz={STAGE2_IMG_SIZE}  global_conf={CONFIDENCE:.2f}",
+                    f"Filters: enabled={FILTERS_ENABLED} gamma={filter_gamma:.2f} bright={filter_brightness} contrast={filter_contrast:.2f} clahe={filter_clahe_enabled}",
                 ]
 
                 if active_lock is not None:
