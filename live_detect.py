@@ -43,8 +43,8 @@ PREVIEW_EVERY_N_FRAMES = 1   # set to 2 or 3 for less preview cost
 
 
 # tune these
-MAX_SPEED_PX_PER_SEC = 500.0      # absolute mouse speed cap
-MAX_ACCEL_PX_PER_SEC2 = 1000.0    # how quickly speed can change
+MAX_SPEED_PX_PER_SEC = 300.0      # absolute mouse speed cap
+MAX_ACCEL_PX_PER_SEC2 = 500.0    # how quickly speed can change
 DEADZONE_PX = 3.0                 # ignore tiny jitter
 
 # examples:
@@ -75,6 +75,23 @@ APPLIED_VECTOR_SCALE = 6.0   # makes short moves easier to see
 APPLIED_VECTOR_COLOR = (0, 0, 255)   # red in OpenCV BGR
 APPLIED_VECTOR_THICKNESS = 2
 APPLIED_VECTOR_MIN_DRAW = 1
+
+FILTERS_ENABLED = True
+SHOW_FILTERED_PREVIEW = True
+DEFAULT_FILTER_GAMMA = 1.00
+DEFAULT_FILTER_BRIGHTNESS = 0
+DEFAULT_FILTER_CONTRAST = 1.00
+DEFAULT_FILTER_CLAHE = False
+
+# F1/F2 gamma, F3/F4 brightness, F11 contrast toggle CLAHE, F12 reset
+FILTER_HOTKEYS = {
+    0x70: ("gamma", -0.10),       # F1
+    0x71: ("gamma", 0.10),        # F2
+    0x72: ("brightness", -8),     # F3
+    0x73: ("brightness", 8),      # F4
+    0x7A: ("clahe_toggle", None), # F11
+    0x7B: ("reset", None),        # F12
+}
 
 # ============================================================
 # 1) CLASS / BEHAVIOR CONFIG
@@ -212,8 +229,8 @@ USE_GPU = True
 
 WINDOW_NAME = "LightBurn"
 
-CROP_WIDTH = 1000
-CROP_HEIGHT = 400
+CROP_WIDTH = 1200
+CROP_HEIGHT = 500
 
 
 # ============================================================
@@ -224,7 +241,7 @@ TRACK_MATCH_DISTANCE_PX = 120
 TRACK_FORGET_FRAMES = 1
 CONFIDENCE_SMOOTHING = 0.10   # lower = smoother, higher = reacts faster
 
-LOCK_ON_MIN_AVG_CONFIDENCE = 0.3
+LOCK_ON_MIN_AVG_CONFIDENCE = 0.6
 
 # ============================================================
 # 12) DYNAMIC VELOCITY LIMITER
@@ -565,6 +582,27 @@ def compute_motion_metrics(prev_gray, frame_bgr):
     return gray, changed_pixels, largest_blob_area, max_changed_in_radius, should_infer
 
 
+def apply_video_filters(frame_bgr, gamma=1.0, brightness=0, contrast=1.0, clahe_enabled=False):
+    out = frame_bgr
+
+    if contrast != 1.0 or brightness != 0:
+        out = cv2.convertScaleAbs(out, alpha=contrast, beta=brightness)
+
+    if abs(gamma - 1.0) > 1e-6:
+        gamma = max(0.10, float(gamma))
+        lut = np.array([((i / 255.0) ** (1.0 / gamma)) * 255 for i in range(256)], dtype=np.uint8)
+        out = cv2.LUT(out, lut)
+
+    if clahe_enabled:
+        lab = cv2.cvtColor(out, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        l = clahe.apply(l)
+        out = cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2BGR)
+
+    return out
+
+
 def lerp(a, b, t):
     return a + (b - a) * t
 
@@ -757,6 +795,12 @@ def main():
         prev_raider_key_down = False
         prev_other_key_down = False
         prev_aim_hotkey_down = {vk: False for vk in AIM_REGION_HOTKEYS}
+        prev_filter_hotkey_down = {vk: False for vk in FILTER_HOTKEYS}
+
+        filter_gamma = DEFAULT_FILTER_GAMMA
+        filter_brightness = DEFAULT_FILTER_BRIGHTNESS
+        filter_contrast = DEFAULT_FILTER_CONTRAST
+        filter_clahe_enabled = DEFAULT_FILTER_CLAHE
 
         prev_motion_gray = None
         frames_since_infer = FORCE_INFERENCE_EVERY_N_FRAMES
@@ -792,7 +836,7 @@ def main():
             results = None
             if did_run_inference:
                 results = model.predict(
-                    source=frame,
+                    source=frame_for_inference,
                     conf=CONFIDENCE,
                     imgsz=STAGE1_IMG_SIZE if TWO_STAGE_ENABLED else IMG_SIZE,
                     device=0 if USE_GPU else "cpu",
@@ -829,7 +873,7 @@ def main():
             frame_h, frame_w = frame.shape[:2]
 
             if render_mode == "full":
-                annotated = frame.copy()
+                annotated = frame_for_inference.copy() if SHOW_FILTERED_PREVIEW else frame.copy()
             elif render_mode in ("boxes", "stats"):
                 annotated = np.zeros_like(frame)
             else:
@@ -875,6 +919,31 @@ def main():
                 if hotkey_down and not prev_aim_hotkey_down[vk]:
                     current_aim_region_override = region_name
                 prev_aim_hotkey_down[vk] = hotkey_down
+
+            for vk, action in FILTER_HOTKEYS.items():
+                hotkey_down = is_key_down(vk)
+                if hotkey_down and not prev_filter_hotkey_down[vk]:
+                    kind, value = action
+                    if kind == "gamma":
+                        filter_gamma = min(3.0, max(0.2, filter_gamma + value))
+                    elif kind == "brightness":
+                        filter_brightness = int(min(80, max(-80, filter_brightness + value)))
+                    elif kind == "clahe_toggle":
+                        filter_clahe_enabled = not filter_clahe_enabled
+                    elif kind == "reset":
+                        filter_gamma = DEFAULT_FILTER_GAMMA
+                        filter_brightness = DEFAULT_FILTER_BRIGHTNESS
+                        filter_contrast = DEFAULT_FILTER_CONTRAST
+                        filter_clahe_enabled = DEFAULT_FILTER_CLAHE
+                prev_filter_hotkey_down[vk] = hotkey_down
+
+            frame_for_inference = apply_video_filters(
+                frame,
+                gamma=filter_gamma,
+                brightness=filter_brightness,
+                contrast=filter_contrast,
+                clahe_enabled=filter_clahe_enabled,
+            ) if FILTERS_ENABLED else frame
 
             # ------------------------------------------------
             # Build raw detections for classes we care about
@@ -941,7 +1010,7 @@ def main():
                     ry2 = min(frame_h, stage1_candidate["y2"] + STAGE2_PADDING)
 
                     if rx2 > rx1 and ry2 > ry1:
-                        roi = frame[ry1:ry2, rx1:rx2]
+                        roi = frame_for_inference[ry1:ry2, rx1:rx2]
 
                         if STAGE2_CLASSES_MATCH_ONLY and stage1_candidate["class_name"] in name_to_id:
                             stage2_predict_classes = [name_to_id[stage1_candidate["class_name"]]]
@@ -1400,6 +1469,7 @@ def main():
                     f"Motion scan: enabled={MOTION_SCAN_ENABLED} infer={did_run_inference} changed={motion_changed_pixels} blob={motion_largest_blob_area} radius={motion_changed_in_radius}",
                     f"Backend: {'TensorRT' if str(runtime_model_path).endswith('.engine') else 'PyTorch'}  two_stage={TWO_STAGE_ENABLED}",
                     f"Stage1 imgsz={STAGE1_IMG_SIZE}  Stage2 imgsz={STAGE2_IMG_SIZE}  global_conf={CONFIDENCE:.2f}",
+                    f"Filters: enabled={FILTERS_ENABLED} gamma={filter_gamma:.2f} bright={filter_brightness} contrast={filter_contrast:.2f} clahe={filter_clahe_enabled}",
                 ]
 
                 if active_lock is not None:
