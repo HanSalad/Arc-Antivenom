@@ -27,8 +27,6 @@ import numpy as np
 from mss import mss
 from ultralytics import YOLO
 import ctypes
-import win32api
-import win32con
 
 
 USER32 = ctypes.windll.user32
@@ -292,8 +290,9 @@ MARKER_HSV_RANGES = [
 
 
 def move_mouse_relative(dx, dy):
-    win32api.mouse_event(win32con.MOUSEEVENTF_MOVE, dx, dy, 0, 0)
+    USER32.mouse_event(0x0001, int(dx), int(dy), 0, 0)
 
+    
 def is_key_down(vk_code):
     return (USER32.GetAsyncKeyState(vk_code) & 0x8000) != 0
 
