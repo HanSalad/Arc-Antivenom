@@ -18,17 +18,20 @@ import sys
 from typing import Any
 
 
-APP_NAME = "ARC Salad"
-WORKSPACE_ENV_VAR = "ARC_ANTI_VENOM"
+APP_NAME = "YoloSuite"
+WORKSPACE_ENV_VAR = "YOLO_SUITE_WORKSPACE"
 
 
 @dataclass(frozen=True)
 class WorkspacePaths:
     root: Path
     datasets: Path
+    projects: Path
     models: Path
     engines: Path
     runs: Path
+    exports: Path
+    captures: Path
     configs: Path
     logs: Path
     temp: Path
@@ -93,9 +96,12 @@ def build_workspace_paths(root: str | Path | None = None) -> WorkspacePaths:
     return WorkspacePaths(
         root=root_path,
         datasets=root_path / "datasets",
+        projects=root_path / "projects",
         models=root_path / "models",
         engines=root_path / "engines",
         runs=root_path / "runs",
+        exports=root_path / "exports",
+        captures=root_path / "captures",
         configs=root_path / "configs",
         logs=root_path / "logs",
         temp=root_path / "temp",

@@ -27,6 +27,8 @@ import numpy as np
 from mss import mss
 from ultralytics import YOLO
 import ctypes
+import win32api
+import win32con
 
 
 USER32 = ctypes.windll.user32
@@ -232,8 +234,8 @@ LOCK_ON_MIN_AVG_CONFIDENCE = 0.6
 # ============================================================
 # 12) DYNAMIC VELOCITY LIMITER
 # ============================================================
-BASE_MAX_SPEED = 500.0         # px/sec minimum allowed speed
-MAX_MAX_SPEED = 4900.0         # px/sec maximum allowed speed
+BASE_MAX_SPEED = 100.0         # px/sec minimum allowed speed
+MAX_MAX_SPEED =  3500.0         # px/sec maximum allowed speed
 
 NEAR_TARGET_RADIUS = 10.0      # inside this, slow way down
 FAR_TARGET_RADIUS = 500.0      # outside this, allow near max speed
@@ -241,7 +243,7 @@ FAR_TARGET_RADIUS = 500.0      # outside this, allow near max speed
 LOW_CONF_SPEED_MULT = 0.50     # low confidence slows movement
 HIGH_CONF_SPEED_MULT = 1.00    # high confidence allows full movement
 
-MAX_ACCEL_PER_SEC = 2500.0     # how quickly velocity is allowed to change
+MAX_ACCEL_PER_SEC = 2000.0     # how quickly velocity is allowed to change
 
 DEADZONE_RADIUS = 10.0
 STOP_AWAY_MOTION = True
@@ -290,9 +292,8 @@ MARKER_HSV_RANGES = [
 
 
 def move_mouse_relative(dx, dy):
-    USER32.mouse_event(0x0001, int(dx), int(dy), 0, 0)
+    win32api.mouse_event(win32con.MOUSEEVENTF_MOVE, dx, dy, 0, 0)
 
-    
 def is_key_down(vk_code):
     return (USER32.GetAsyncKeyState(vk_code) & 0x8000) != 0
 
